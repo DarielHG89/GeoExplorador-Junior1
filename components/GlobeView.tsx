@@ -93,7 +93,8 @@ const GlobeView: React.FC<GlobeViewProps> = ({
   const { getInteractableObjects, getObjectByName } = useSolarSystem({
       globeEl,
       explorationMode,
-      visualOptions
+      visualOptions,
+      selectedObjectName: selectedCountryName
   });
 
   // --- HANDLERS GENERALES ---
@@ -320,43 +321,16 @@ const GlobeView: React.FC<GlobeViewProps> = ({
             const baseScale = radius * 1.3;
             selectionGroupRef.current.scale.set(baseScale * pulse, baseScale * pulse, baseScale * pulse);
 
-            // 6. Camera Movement (Smooth Transition)
-            if (isTransitioningRef.current) {
-                controls.enableDamping = false;
-                const nowTime = Date.now();
-                const duration = 2000;
-                const elapsed = nowTime - transitionStartTimeRef.current;
-                const progress = Math.min(1, elapsed / duration);
-                const ease = 1 - Math.pow(1 - progress, 3); 
+            // The solar system now moves, so the camera target is always the origin.
+            controls.target.set(0,0,0);
+            controls.update();
 
-                const isEarth = liveTarget.userData.name === 'Earth';
-                const offsetDist = isEarth ? 300 : Math.max(radius * 5, 25); 
-                
-                const startDir = new THREE.Vector3().subVectors(transitionStartPosRef.current, transitionStartTargetRef.current).normalize();
-                if (startDir.lengthSq() < 0.1) startDir.set(0,0,1);
-
-                const idealCameraPos = targetPos.clone().add(startDir.multiplyScalar(offsetDist));
-                const nextCamPos = new THREE.Vector3().lerpVectors(transitionStartPosRef.current, idealCameraPos, ease);
-                
-                camera.position.copy(nextCamPos);
-                controls.target.copy(targetPos); 
-                controls.update();
-
-                if (progress >= 1) {
-                    isTransitioningRef.current = false;
-                }
-            } else {
-                 // Hard Lock on Target
-                 controls.enableDamping = false; 
-                 controls.target.copy(targetPos);
-                 controls.update();
-            }
         } else {
             if (selectionGroupRef.current) selectionGroupRef.current.visible = false;
             controls.enableDamping = true; 
         }
 
-        // --- AUTOMATIC MODE SWITCHING ---
+        // --- AUTOMATIC MODE SWITCHING (Based on camera distance from origin) ---
         if (!intendedSelectionRef.current && onModeChange) {
             const distToCenter = camera.position.length();
             if (distToCenter > 1000 && explorationMode === 'geographic') {
@@ -387,57 +361,36 @@ const GlobeView: React.FC<GlobeViewProps> = ({
   }, [visualOptions.showClouds, visualOptions.showStars, visualOptions.texture, explorationMode, getInteractableObjects, getObjectByName]);
 
 
-  // Handle Camera Reset when selection clears
+  // Zooms the camera to frame the selected object
   useEffect(() => {
-     if (!globeEl.current) return;
-     const controls = globeEl.current.controls();
-     const camera = globeEl.current.camera();
+    if (!globeEl.current) return;
+    const globe = globeEl.current;
 
-     if (!selectedCountryName) {
-         if (selectionGroupRef.current) selectionGroupRef.current.visible = false;
-         
-         if (controls && camera) {
-             const startTarget = controls.target.clone();
-             const endTarget = new THREE.Vector3(0,0,0);
-             const duration = 1000;
-             const start = Date.now();
-             
-             const resetTween = () => {
-                 const now = Date.now();
-                 const t = Math.min(1, (now - start) / duration);
-                 const ease = 1 - Math.pow(1 - t, 3);
-                 
-                 controls.target.lerpVectors(startTarget, endTarget, ease);
-                 controls.update();
-                 if (t < 1) requestAnimationFrame(resetTween);
-                 else {
-                     // Restaurar controles según modo
-                     if (explorationMode === 'geographic') {
-                         controls.autoRotate = true;
-                         controls.minDistance = 200;
-                     } else {
-                         controls.minDistance = 150;
-                     }
-                     controls.enablePan = true;
-                     controls.enableDamping = true; 
-                 }
-             };
-             resetTween();
-         }
-         return;
-     }
+    if (selectedCountryName) {
+        const liveTarget = getObjectByName(selectedCountryName);
+        let radius = 100; // Default to Earth's size
+        if (liveTarget && (liveTarget as THREE.Mesh).geometry) {
+            const geo = (liveTarget as THREE.Mesh).geometry as THREE.SphereGeometry;
+            if (geo.parameters && geo.parameters.radius) {
+                radius = geo.parameters.radius;
+            }
+        }
 
-     if (controls && camera) {
-             controls.autoRotate = false; 
-             controls.enablePan = false; 
-             controls.minDistance = 5; 
+        // Determine ideal altitude based on object size
+        const isEarth = selectedCountryName === 'Earth';
+        const altitude = isEarth ? 2.5 : Math.max(radius / 10, 1.5);
 
-             isTransitioningRef.current = true;
-             transitionStartTimeRef.current = Date.now();
-             transitionStartPosRef.current.copy(camera.position);
-             transitionStartTargetRef.current.copy(controls.target);
-     }
-  }, [selectedCountryName, explorationMode]);
+        globe.pointOfView({ lat: 20, lng: 0, altitude }, 1500);
+
+    } else {
+        // No object selected, reset to default view
+        if (explorationMode === 'geographic') {
+            globe.pointOfView({ lat: 20, lng: -90, altitude: 2.5 }, 1500);
+        } else {
+            globe.pointOfView({ lat: 20, lng: 0, altitude: 45 }, 1500);
+        }
+    }
+  }, [selectedCountryName, explorationMode, getObjectByName]);
 
   
   useEffect(() => {

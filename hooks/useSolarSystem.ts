@@ -1,11 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { GlobeMethods } from 'react-globe.gl';
 import { GlobeVisualOptions } from '../components/LayerControls';
 import { ExplorationMode } from '../types';
 import { createLabelSprite } from '../utils/threeHelpers';
 import {
-  SOLAR_SYSTEM_DATA,
+  SCALED_SOLAR_SYSTEM_DATA, // Use scaled data
   COMETS_DATA,
   getOrbitPoints3D,
   calculateOrbitalPosition,
@@ -18,15 +18,17 @@ interface UseSolarSystemProps {
   globeEl: React.MutableRefObject<GlobeMethods | undefined>;
   explorationMode: ExplorationMode;
   visualOptions: GlobeVisualOptions;
+  selectedObjectName: string | null; // Pass in the selected object
 }
 
-export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseSolarSystemProps) => {
+export const useSolarSystem = ({ globeEl, explorationMode, visualOptions, selectedObjectName }: UseSolarSystemProps) => {
   const solarSystemObjects = useRef(new Map());
   const cometObjects = useRef(new Map());
   const moonSphereRef = useRef<THREE.Mesh | null>(null);
   const sunLightRef = useRef<THREE.DirectionalLight | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const earthHitboxRef = useRef<THREE.Mesh | null>(null);
+  const solarSystemGroupRef = useRef<THREE.Group | null>(null); // Master group for the entire system
 
   const isSolarMode = explorationMode === 'solar_system';
 
@@ -46,22 +48,27 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
     const scene = globe.scene();
     const textureLoader = new THREE.TextureLoader();
 
+    // Create the master group for the solar system
+    const solarSystemGroup = new THREE.Group();
+    scene.add(solarSystemGroup);
+    solarSystemGroupRef.current = solarSystemGroup;
+
     // Luces
     const sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
-    scene.add(sunLight);
+    solarSystemGroup.add(sunLight); // Add light to the group
     sunLightRef.current = sunLight;
     const ambientLight = new THREE.AmbientLight(0x404040, 0.1);
-    scene.add(ambientLight);
+    solarSystemGroup.add(ambientLight);
 
     // Hitbox Tierra (Invisible, para clicks)
     const hbGeo = new THREE.SphereGeometry(100, 32, 32);
     const hbMat = new THREE.MeshBasicMaterial({ visible: false });
     const earthHitbox = new THREE.Mesh(hbGeo, hbMat);
     earthHitbox.userData = { name: "Earth", isCelestial: true };
-    scene.add(earthHitbox);
+    scene.add(earthHitbox); // Hitbox stays at origin, as the globe is there
     earthHitboxRef.current = earthHitbox;
 
-    // Luna (Visualización Geográfica - Geocéntrica)
+    // Luna (Visualización Geocéntrica - AHORA DENTRO DEL GRUPO)
     const moonTexture = textureLoader.load('//unpkg.com/three-globe/example/img/moon.jpg');
     const moonGeometry = new THREE.SphereGeometry(2, 32, 32);
     const moonMaterial = new THREE.MeshStandardMaterial({ map: moonTexture, fog: false });
@@ -71,16 +78,16 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
     
     const moonLabel = createLabelSprite('Luna', 18, '#E0E0E0');
     moonSphere.add(moonLabel);
-    scene.add(moonSphere);
+    solarSystemGroup.add(moonSphere);
 
     const moonOrbitPoints = getMoonOrbitPoints();
     const moonOrbitGeom = new THREE.BufferGeometry().setFromPoints(moonOrbitPoints);
     const moonOrbitMat = new THREE.LineBasicMaterial({ color: 0xaaaaaa, opacity: 0.4, transparent: true });
     const moonOrbitLine = new THREE.Line(moonOrbitGeom, moonOrbitMat);
-    scene.add(moonOrbitLine);
+    solarSystemGroup.add(moonOrbitLine);
 
     // --- PLANETAS DEL SISTEMA SOLAR ---
-    SOLAR_SYSTEM_DATA.forEach(planet => {
+    SCALED_SOLAR_SYSTEM_DATA.forEach(planet => {
         const objects: { [key: string]: any } = {};
 
         // 1. Línea de Órbita (Eclíptica)
@@ -89,26 +96,19 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
             const orbitGeometry = new THREE.BufferGeometry().setFromPoints(orbitPoints);
             const orbitMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.2, transparent: true });
             const orbitLine = new THREE.Line(orbitGeometry, orbitMaterial);
-            scene.add(orbitLine);
+            solarSystemGroup.add(orbitLine);
             objects.orbit = orbitLine;
         }
 
         if (planet.name !== 'Earth') {
-            // 2. Grupo "Tilt" (Aplica la Oblicuidad/Peralte del planeta)
-            // Este grupo contendrá el Mesh del planeta y sus Lunas.
-            // Al rotar este grupo, todo el sistema local del planeta se inclina.
             const tiltGroup = new THREE.Group();
-            
-            // Convertir grados a radianes y aplicar rotación en Z (inclinación del eje)
-            // Z es el eje "adelante" en vista estándar, pero aquí usamos Z como eje de inclinación lateral en el plano 2D vertical
             const obliquityRad = planet.obliquity * (Math.PI / 180);
             tiltGroup.rotation.z = obliquityRad;
             
-            scene.add(tiltGroup);
+            solarSystemGroup.add(tiltGroup);
             objects.tiltGroup = tiltGroup;
 
-            // 3. Malla del Planeta (Rota sobre su eje Y local)
-            const planetGeometry = new THREE.SphereGeometry(planet.radius, planet.name === 'Sun' ? 32 : 32, planet.name === 'Sun' ? 32 : 32);
+            const planetGeometry = new THREE.SphereGeometry(planet.radius, 32, 32);
             const planetMaterial = planet.name === 'Sun'
                 ? new THREE.MeshBasicMaterial({ map: textureLoader.load(planet.textureUrl), fog: false })
                 : new THREE.MeshStandardMaterial({ map: textureLoader.load(planet.textureUrl) });
@@ -215,35 +215,35 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
 
     // --- ANIMATION LOOP ---
     const animate = () => {
+      if (!solarSystemGroupRef.current) return;
       const now = new Date();
-      const time = now.getTime() * 0.001; // Seconds
+      const time = now.getTime() * 0.001;
+
+      // Determine the center of the universe for this frame
+      const centerObjectName = selectedObjectName || 'Earth';
+      const centerObjectData = SCALED_SOLAR_SYSTEM_DATA.find(p => p.name === centerObjectName);
+      let centerObjectPosition = new THREE.Vector3(0, 0, 0);
+
+      if (centerObjectData) {
+          const pos = calculateOrbitalPosition(centerObjectData, now);
+          centerObjectPosition.set(pos.x, pos.y, pos.z);
+      }
       
-      // 1. Calcular posición de la Tierra para centrar el sistema
-      // (La cámara siempre orbita 0,0,0, así que movemos el universo para que la Tierra esté en 0,0,0)
-      const earthData = SOLAR_SYSTEM_DATA.find(p => p.name === 'Earth')!;
-      const earthPos3D = calculateOrbitalPosition(earthData, now);
-      const earthVec = new THREE.Vector3(earthPos3D.x, earthPos3D.y, earthPos3D.z);
-      const geoTransform = new THREE.Vector3().copy(earthVec).negate();
-      
+      // Move the entire solar system to keep the selected object at the origin
+      solarSystemGroupRef.current.position.copy(centerObjectPosition).negate();
+
       let sunGeoPos = new THREE.Vector3();
 
-      // 2. Actualizar Planetas
-      SOLAR_SYSTEM_DATA.forEach(planet => {
+      // Update Planets
+      SCALED_SOLAR_SYSTEM_DATA.forEach(planet => {
         const objects = solarSystemObjects.current.get(planet.name);
         
-        if (planet.name === 'Earth') {
-            // La Tierra es el globo de react-globe.gl, fijo en 0,0,0.
-        } else {
-            if (objects) {
-                // Posición Orbital Global
-                const posData = calculateOrbitalPosition(planet, now);
-                const pos = new THREE.Vector3(posData.x, posData.y, posData.z);
-                const finalPos = new THREE.Vector3().copy(pos).add(geoTransform);
-                
-                // Mover el Grupo Inclinado
-                if (objects.tiltGroup) objects.tiltGroup.position.copy(finalPos);
-                // Mover la línea de órbita (que es estática en forma, solo se traslada con el sistema)
-                if (objects.orbit) objects.orbit.position.copy(geoTransform);
+        if (planet.name !== 'Earth' && objects) {
+            const posData = calculateOrbitalPosition(planet, now);
+            const pos = new THREE.Vector3(posData.x, posData.y, posData.z);
+
+            if (objects.tiltGroup) objects.tiltGroup.position.copy(pos);
+            if (objects.orbit) objects.orbit.position.set(0,0,0); // Orbits are relative to the sun
                 
                 // Rotación Axial (Día/Noche) - Rota sobre eje Y local del tiltGroup
                 if (objects.mesh) {
@@ -254,77 +254,59 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
                 }
 
                 if (planet.name === 'Sun') {
-                    sunGeoPos.copy(finalPos);
-                    if (sunLightRef.current) sunLightRef.current.position.copy(finalPos);
+                    sunGeoPos.copy(pos);
+                    if (sunLightRef.current) sunLightRef.current.position.copy(pos);
                 }
 
-                // Actualizar Lunas
                 if (objects.moons) {
                     objects.moons.forEach((m: any) => {
-                        // Calcular posición relativa al planeta (centro 0,0,0 del tiltGroup)
                         const moonPosData = calculateOrbitalPosition(m.data, now);
                         const moonPos = new THREE.Vector3(moonPosData.x, moonPosData.y, moonPosData.z);
                         if (m.mesh) m.mesh.position.copy(moonPos);
-                        
-                        // Actualizar label de luna para que siga al mesh
                         if (m.label) {
                             m.label.position.copy(moonPos);
-                            m.label.position.y += m.data.radius * 2 + 2; // Offset
-                            // Billboarding manual si fuera necesario debido al tilt
+                            m.label.position.y += m.data.radius * 2 + 2;
                         }
                     });
                 }
             }
-        }
-      });
+        });
 
-      // 3. Actualizar Cometas
       COMETS_DATA.forEach(comet => {
         const objects = cometObjects.current.get(comet.name);
         if (objects) {
              const posData = calculateOrbitalPosition(comet, now);
              const pos = new THREE.Vector3(posData.x, posData.y, posData.z);
-             const finalPos = new THREE.Vector3().copy(pos).add(geoTransform);
-
-             if (objects.mesh) objects.mesh.position.copy(finalPos);
-             if (objects.orbit) objects.orbit.position.copy(geoTransform);
-             
+             if (objects.mesh) objects.mesh.position.copy(pos);
+             if (objects.orbit) objects.orbit.position.set(0,0,0);
              if (objects.tail) {
-                 objects.tail.position.copy(finalPos);
-                 // La cola apunta siempre lejos del Sol
-                 const sunToComet = new THREE.Vector3().subVectors(finalPos, sunGeoPos).normalize();
-                 // Posicionar cola detrás del cometa respecto al sol
-                 const lookTarget = new THREE.Vector3().copy(finalPos).add(sunToComet);
+                 objects.tail.position.copy(pos);
+                 const sunToComet = new THREE.Vector3().subVectors(pos, sunGeoPos).normalize();
+                 const lookTarget = new THREE.Vector3().copy(pos).add(sunToComet);
                  objects.tail.lookAt(lookTarget);
-                 
-                 // Escalar cola según cercanía al sol (más cerca = más cola)
-                 const distToSun = finalPos.distanceTo(sunGeoPos);
+                 const distToSun = pos.distanceTo(sunGeoPos);
                  const scale = Math.max(0.5, 800 / (distToSun + 10)); 
                  objects.tail.scale.set(scale, 1, scale);
              }
         }
       });
       
-      // 4. Luna Terrestre (Geocéntrica)
       const moonPosData = getMoonPosition(now);
-      const moonPos = new THREE.Vector3(moonPosData.x, moonPosData.y, moonPosData.z);
-      if (moonSphereRef.current) moonSphereRef.current.position.copy(moonPos);
+      const earthData = SCALED_SOLAR_SYSTEM_DATA.find(p => p.name === 'Earth');
+      const earthPos = earthData ? calculateOrbitalPosition(earthData, now) : {x:0,y:0,z:0};
+      const finalMoonPos = new THREE.Vector3(moonPosData.x + earthPos.x, moonPosData.y + earthPos.y, moonPosData.z + earthPos.z);
+      if (moonSphereRef.current) moonSphereRef.current.position.copy(finalMoonPos);
 
-      // 5. Scaling de Etiquetas (Billboarding y tamaño constante en pantalla)
       const camera = globeEl.current?.camera();
       if (camera) {
-        SOLAR_SYSTEM_DATA.forEach(planet => {
+        SCALED_SOLAR_SYSTEM_DATA.forEach(planet => {
              const obj = solarSystemObjects.current.get(planet.name);
              if (obj && obj.label && obj.tiltGroup) {
-                 // Distancia a cámara
-                 const dist = obj.tiltGroup.position.distanceTo(camera.position);
-                 // Escalar label
+                 const worldPos = new THREE.Vector3();
+                 obj.tiltGroup.getWorldPosition(worldPos);
+                 const dist = worldPos.distanceTo(camera.position);
                  const scale = Math.max(10, dist / 40);
                  obj.label.scale.set(scale, scale, 1);
-                 
-                 // Ajustar altura para que no quede dentro del planeta
-                 // Como el label está dentro del tiltGroup, "y" es local (inclinado). 
-                 // Está bien, queremos que esté sobre el polo norte del planeta
                  obj.label.position.set(0, planet.radius * 1.5 + scale * 0.2, 0); 
              }
         });
@@ -337,31 +319,20 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
 
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      // Cleanup visual objects
       try {
         const scene = globeEl.current?.scene();
-        if(scene) {
-            scene.remove(sunLight);
-            scene.remove(ambientLight);
-            if(earthHitbox) scene.remove(earthHitbox);
-            if(moonSphere) scene.remove(moonSphere);
-            if(moonOrbitLine) scene.remove(moonOrbitLine);
-            solarSystemObjects.current.forEach((obj: any) => {
-                if(obj.tiltGroup) scene.remove(obj.tiltGroup);
-                if(obj.orbit) scene.remove(obj.orbit);
-            });
-            cometObjects.current.forEach((obj: any) => {
-                if(obj.mesh) scene.remove(obj.mesh);
-                if(obj.orbit) scene.remove(obj.orbit);
-                if(obj.tail) scene.remove(obj.tail);
-            });
+        if(scene && solarSystemGroupRef.current) {
+            scene.remove(solarSystemGroupRef.current);
         }
-      } catch(e){}
+        if(scene && earthHitboxRef.current) {
+            scene.remove(earthHitboxRef.current);
+        }
+      } catch(e){ console.error("Error cleaning up scene:", e); }
     };
-  }, []);
+  }, []); // Should only run once on mount
 
   // Helpers para interacción (Raycasting)
-  const getInteractableObjects = () => {
+  const getInteractableObjects = useCallback(() => {
       const objects: THREE.Object3D[] = [];
       if (earthHitboxRef.current) objects.push(earthHitboxRef.current);
       
@@ -373,12 +344,21 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
           if (obj.mesh) objects.push(obj.mesh);
       });
       return objects;
-  };
+  }, []);
 
-  const getObjectByName = (name: string) => {
+  const getObjectByName = useCallback((name: string) => {
       if (name === 'Earth') return earthHitboxRef.current;
+
       const planetObj = solarSystemObjects.current.get(name);
-      if (planetObj && planetObj.mesh) return planetObj.mesh;
+      // Devolver el tiltGroup si existe, ya que contiene la posición mundial correcta.
+      // El mesh por sí solo tiene una posición local relativa al grupo.
+      if (planetObj && planetObj.tiltGroup) {
+          return planetObj.tiltGroup;
+      }
+      if (planetObj && planetObj.mesh) { // Fallback para el Sol si no tuviera tiltGroup
+          return planetObj.mesh;
+      }
+
       const cometObj = cometObjects.current.get(name);
       if (cometObj && cometObj.mesh) return cometObj.mesh;
       
@@ -391,7 +371,7 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
           }
       });
       return moonMesh;
-  };
+  }, []);
 
   return { getInteractableObjects, getObjectByName };
 };

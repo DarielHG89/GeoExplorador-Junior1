@@ -142,6 +142,49 @@ export const COMETS_DATA: CometData[] = [
   }
 ];
 
+// --- SCALED DATA ---
+// Create a deep copy to avoid mutating the original constant
+const SOLAR_SYSTEM_DATA_COPY: PlanetData[] = JSON.parse(JSON.stringify(SOLAR_SYSTEM_DATA));
+
+// Earth's visual radius in the globe is 100. Set it here for scaling calculations.
+const earthData = SOLAR_SYSTEM_DATA_COPY.find(p => p.name === 'Earth');
+if (earthData) {
+  earthData.radius = 100;
+}
+
+// Logarithmic scaling to make planet sizes more visually balanced
+const logScale = (radius: number, factor = 15) => {
+    if (radius <= 0) return 1; // Return a minimum size for non-positive radii
+    // A base size plus a logarithmic scale of the original radius
+    return 2 + factor * Math.log10(radius);
+};
+
+export const SCALED_SOLAR_SYSTEM_DATA: PlanetData[] = SOLAR_SYSTEM_DATA_COPY.map(body => {
+    const newBody = { ...body }; // Start with a shallow copy
+
+    if (body.name === 'Sun') {
+        newBody.radius = 35; // Keep the sun large and fixed
+    } else {
+        newBody.radius = logScale(body.radius);
+    }
+
+    if (newBody.rings) {
+        newBody.rings.innerRadius = logScale(body.rings.innerRadius, 12);
+        newBody.rings.outerRadius = logScale(body.rings.outerRadius, 12);
+    }
+
+    if (newBody.moons) {
+        newBody.moons = newBody.moons.map((moon, index) => ({
+            ...moon,
+            // Moons should be small but visible, using a smaller factor
+            radius: Math.max(0.5, logScale(body.moons[index].radius, 2)),
+        }));
+    }
+
+    return newBody;
+});
+
+
 /**
  * Calculates a 3D position based on Keplerian orbital elements.
  * Returns Vector3D {x, y, z} where Y is "Up" in Three.js (Ecliptic Normal), 
