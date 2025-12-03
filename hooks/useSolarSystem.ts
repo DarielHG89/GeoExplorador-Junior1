@@ -377,8 +377,17 @@ export const useSolarSystem = ({ globeEl, explorationMode, visualOptions }: UseS
 
   const getObjectByName = (name: string) => {
       if (name === 'Earth') return earthHitboxRef.current;
+
       const planetObj = solarSystemObjects.current.get(name);
-      if (planetObj && planetObj.mesh) return planetObj.mesh;
+      // Devolver el tiltGroup si existe, ya que contiene la posición mundial correcta.
+      // El mesh por sí solo tiene una posición local relativa al grupo.
+      if (planetObj && planetObj.tiltGroup) {
+          return planetObj.tiltGroup;
+      }
+      if (planetObj && planetObj.mesh) { // Fallback para el Sol si no tuviera tiltGroup
+          return planetObj.mesh;
+      }
+
       const cometObj = cometObjects.current.get(name);
       if (cometObj && cometObj.mesh) return cometObj.mesh;
       
