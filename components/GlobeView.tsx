@@ -344,10 +344,10 @@ const GlobeView: React.FC<GlobeViewProps> = ({
 
                 if (progress >= 1) {
                     isTransitioningRef.current = false;
+                    controls.enableDamping = true; // Re-enable damping for smooth user control
                 }
             } else {
-                 // Hard Lock on Target
-                 controls.enableDamping = false; 
+                 // Continuously update the target to follow the planet
                  controls.target.copy(targetPos);
                  controls.update();
             }
